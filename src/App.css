@@ -50,14 +50,14 @@
   border-radius: 999px;
   border: 1px solid var(--border);
   padding: 0.85rem 1.25rem;
-  background: #f9fafc;
+  background: var(--card);
   transition: border-color 0.2s ease;
 }
 
 .search-box input:focus-visible {
   outline: 2px solid var(--accent);
   border-color: var(--accent);
-  background: #fff;
+  background: var(--card);
 }
 
 .layout {
@@ -148,7 +148,7 @@
 
 .status.callout.error {
   border-color: #f55f70;
-  background: #fff5f7;
+  background: rgba(245, 95, 112, 0.1);
 }
 
 .status.callout.muted {
@@ -173,7 +173,7 @@
   border: 1px dashed var(--border);
   border-radius: var(--radius);
   padding: 1rem;
-  background: #fbfcff;
+  background: var(--card);
   display: flex;
   flex-direction: column;
   gap: 0.8rem;
@@ -250,7 +250,7 @@
   border-radius: 999px;
   border: 1px solid var(--border);
   padding: 0.35rem 0.9rem;
-  background: #f7f8fb;
+  background: var(--surface);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -275,6 +275,8 @@
   justify-content: center;
   width: 16px;
   height: 16px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.05);
 }
 
 .setting-group {
@@ -330,6 +332,7 @@
 
 .font-slider input {
   width: 140px;
+  accent-color: var(--accent);
 }
 
 .fisheye-row {
@@ -461,7 +464,7 @@
   border: 1px dashed var(--border);
   padding: 0.75rem 1rem;
   border-radius: 999px;
-  background: #f9f9ff;
+  background: var(--card);
 }
 
 .translation-list {
@@ -480,7 +483,7 @@
   cursor: pointer;
   position: relative;
   color: var(--muted);
-  background: #fff;
+  background: var(--surface);
 }
 
 .translation-pill input {
@@ -492,7 +495,7 @@
 
 .translation-pill.selected {
   background: rgba(76, 99, 237, 0.15);
-  color: #1c2088;
+  color: var(--accent);
   border-color: currentColor;
 }
 
@@ -554,7 +557,7 @@
 
 .verse-stack-entry p {
   margin: 0;
-  color: #23263b;
+  color: var(--muted);
   font-size: var(--reader-font-size, 16px);
 }
 
