@@ -1,4 +1,5 @@
-import { Fragment, useMemo, useRef, useState } from 'react'
+﻿import type { DragEvent as ReactDragEvent } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import './App.css'
 import { translationDefinitions } from './data/translations'
 import { FisheyeMenu } from './components/FisheyeMenu'
@@ -25,17 +26,66 @@ const formatLocation = (location: VerseLocation, bookName?: string) => {
   return `${bookName ?? 'Book'} ${chapterLabel}${verseLabel}`
 }
 
+type VerseStackTarget = {
+  key: string
+  location: VerseLocation
+  label: string
+}
+
 function App() {
   const { booksByTranslation, loading, error, reload } = useBibleData(translationDefinitions)
   const canonicalBooks = booksByTranslation[canonicalTranslationId] ?? []
-  const [tabs, setTabs] = useState<TabState[]>([initialTab])
-  const [activeTabId, setActiveTabId] = useState(initialTab.id)
+  const [activeTab, setActiveTab] = useState<TabState>(initialTab)
   const [searchTerm, setSearchTerm] = useState('')
   const [recent, setRecent] = useState<RecentLocation[]>([])
-  const [hoveredVerse, setHoveredVerse] = useState<number | null>(null)
-  const nextTabId = useRef(2)
+  const [theme, setTheme] = useState<'light' | 'dark'>('light')
+  const [fontSize, setFontSize] = useState(16)
+  const [showFisheye, setShowFisheye] = useState(true)
+  const [draggingRecent, setDraggingRecent] = useState<string | null>(null)
+  const [selectedRecentKeys, setSelectedRecentKeys] = useState<string[]>([])
 
-  const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0]
+  const verseSelected = activeTab.location.verseIndex != null
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+  }, [theme])
+
+  useEffect(() => {
+    document.documentElement.style.setProperty('--reader-font-size', `${fontSize}px`)
+  }, [fontSize])
+
+  const buildVerseRowsForLocation = (location: VerseLocation) => {
+    const clampedLocation = clampLocation(location)
+    const translationData = activeTab.translations.map((translationId) => {
+      const translation = translationDefinitions.find(
+        (definition) => definition.id === translationId,
+      )
+      const books = booksByTranslation[translationId]
+      const chapter =
+        books?.[clampedLocation.bookIndex]?.chapters[clampedLocation.chapterIndex] ?? []
+      return { translationId, translation, chapter }
+    })
+    const verseCount = translationData.reduce(
+      (max, entry) => Math.max(max, entry.chapter.length),
+      0,
+    )
+    return Array.from({ length: verseCount }, (_, index) => ({
+      verseIndex: index,
+      entries: translationData.map((entry) => ({
+        translationId: entry.translationId,
+        translation: entry.translation,
+        text: entry.chapter[index],
+      })),
+    }))
+  }
+
+  useEffect(() => {
+    if (verseSelected) {
+      setShowFisheye(false)
+    }
+  }, [verseSelected])
+
+
 
   const clampLocation = (location: VerseLocation): VerseLocation => {
     if (!canonicalBooks.length) {
@@ -66,100 +116,136 @@ function App() {
   }
 
   const registerRecent = (location: VerseLocation) => {
+    const key = makeLocationKey(location)
     setRecent((prev) => {
-      const key = makeLocationKey(location)
       const nextEntries = [
         { key, location, timestamp: Date.now() },
         ...prev.filter((entry) => entry.key !== key),
-      ]
-      return nextEntries.slice(0, 10)
+      ].slice(0, 10)
+      setSelectedRecentKeys(() => [key])
+      return nextEntries
     })
   }
 
-  const updateTabLocation = (tabId: string, changes: Partial<VerseLocation>) => {
-    let nextLocation: VerseLocation | null = null
-    setTabs((prevTabs) =>
-      prevTabs.map((tab) => {
-        if (tab.id !== tabId) {
-          return tab
-        }
-        const proposed: VerseLocation = {
-          bookIndex: changes.bookIndex ?? tab.location.bookIndex,
-          chapterIndex:
-            changes.bookIndex !== undefined
-              ? 0
-              : changes.chapterIndex ?? tab.location.chapterIndex,
-          verseIndex:
-            changes.bookIndex !== undefined || changes.chapterIndex !== undefined
-              ? changes.verseIndex ?? null
-              : changes.verseIndex ?? tab.location.verseIndex,
-        }
+  const reorderRecents = (fromKey: string, toKey: string) => {
+    setRecent((items) => {
+      const fromIndex = items.findIndex((entry) => entry.key === fromKey)
+      const toIndex = items.findIndex((entry) => entry.key === toKey)
+      if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) {
+        return items
+      }
+      const updated = [...items]
+      const [moved] = updated.splice(fromIndex, 1)
+      updated.splice(toIndex, 0, moved)
+      const orderedKeys = updated.map((entry) => entry.key)
+      setSelectedRecentKeys((prevSelected) =>
+        prevSelected
+          .filter((key) => orderedKeys.includes(key))
+          .sort((a, b) => orderedKeys.indexOf(a) - orderedKeys.indexOf(b)),
+      )
+      return updated
+    })
+  }
 
-        const clamped = clampLocation(proposed)
-        nextLocation = clamped
-        return { ...tab, location: clamped }
-      }),
-    )
+  const updateTabLocation = (_tabId: string, changes: Partial<VerseLocation>) => {
+    setActiveTab((prevTab) => {
+      const nextBookIndex = changes.bookIndex ?? prevTab.location.bookIndex
+      const hasChapterChange = changes.chapterIndex !== undefined
+      const hasBookChange = changes.bookIndex !== undefined
+      const nextChapterIndex = hasChapterChange
+        ? changes.chapterIndex!
+        : hasBookChange
+          ? 0
+          : prevTab.location.chapterIndex
+      const shouldResetVerse =
+        changes.verseIndex === undefined && (hasChapterChange || hasBookChange)
+      const nextVerseIndex =
+        changes.verseIndex !== undefined
+          ? changes.verseIndex
+          : shouldResetVerse
+            ? 0
+            : prevTab.location.verseIndex
 
-    if (nextLocation) {
-      registerRecent(nextLocation)
+      const proposed: VerseLocation = {
+        bookIndex: nextBookIndex,
+        chapterIndex: nextChapterIndex,
+        verseIndex: nextVerseIndex,
+      }
+
+      const clamped = clampLocation(proposed)
+      registerRecent(clamped)
+      return { ...prevTab, location: clamped }
+    })
+  }
+
+  const toggleTranslation = (_tabId: string, translationId: string) => {
+    setActiveTab((prevTab) => {
+      const isActive = prevTab.translations.includes(translationId)
+      if (isActive) {
+        if (prevTab.translations.length === 1) {
+          return prevTab
+        }
+        return {
+          ...prevTab,
+          translations: prevTab.translations.filter((id) => id !== translationId),
+        }
+      }
+
+      if (prevTab.translations.length >= MAX_TRANSLATIONS) {
+        return prevTab
+      }
+
+      return { ...prevTab, translations: [...prevTab.translations, translationId] }
+    })
+  }
+
+  const toggleRecentSelection = (key: string) => {
+    setSelectedRecentKeys((prevSelected) => {
+      if (prevSelected.includes(key)) {
+        return prevSelected.filter((selectedKey) => selectedKey !== key)
+      }
+      const orderedKeys = recent.map((entry) => entry.key)
+      const getOrder = (candidate: string) => {
+        const index = orderedKeys.indexOf(candidate)
+        return index === -1 ? Number.MAX_SAFE_INTEGER : index
+      }
+      const next = [...prevSelected, key]
+      return next.sort((a, b) => getOrder(a) - getOrder(b))
+    })
+  }
+
+  const handleRecentDragStart = (
+    event: ReactDragEvent<HTMLButtonElement>,
+    key: string,
+  ) => {
+    setDraggingRecent(key)
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', key)
+  }
+
+  const handleRecentDragOver = (
+    event: ReactDragEvent<HTMLButtonElement>,
+    targetKey: string,
+  ) => {
+    event.preventDefault()
+    if (draggingRecent && draggingRecent !== targetKey) {
+      reorderRecents(draggingRecent, targetKey)
     }
   }
 
-  const toggleTranslation = (tabId: string, translationId: string) => {
-    setTabs((prevTabs) =>
-      prevTabs.map((tab) => {
-        if (tab.id !== tabId) {
-          return tab
-        }
-        const isActive = tab.translations.includes(translationId)
-        if (isActive) {
-          if (tab.translations.length === 1) {
-            return tab
-          }
-          return {
-            ...tab,
-            translations: tab.translations.filter((id) => id !== translationId),
-          }
-        }
-
-        if (tab.translations.length >= MAX_TRANSLATIONS) {
-          return tab
-        }
-
-        return { ...tab, translations: [...tab.translations, translationId] }
-      }),
-    )
+  const handleRecentDrop = (event: ReactDragEvent) => {
+    event.preventDefault()
+    setDraggingRecent(null)
   }
 
-  const addTab = () => {
-    const newTab: TabState = {
-      id: `tab-${nextTabId.current}`,
-      location: { bookIndex: 0, chapterIndex: 0, verseIndex: null },
-      translations: translationDefinitions.slice(0, 2).map((translation) => translation.id),
-    }
-    nextTabId.current += 1
-    setTabs((prevTabs) => [...prevTabs, newTab])
-    setActiveTabId(newTab.id)
-    setHoveredVerse(null)
-  }
+  const handleRecentDragEnd = () => setDraggingRecent(null)
 
-  const closeTab = (tabId: string) => {
-    if (tabs.length === 1) {
-      return
-    }
-    const index = tabs.findIndex((tab) => tab.id === tabId)
-    const updatedTabs = tabs.filter((tab) => tab.id !== tabId)
-    setTabs(updatedTabs)
-    if (activeTabId === tabId) {
-      const fallback = updatedTabs[Math.max(0, index - 1)]
-      setActiveTabId(fallback.id)
-    }
+  const removeRecent = (key: string) => {
+    setRecent((items) => items.filter((entry) => entry.key !== key))
+    setSelectedRecentKeys((prev) => prev.filter((selectedKey) => selectedKey !== key))
   }
 
   const bookList = canonicalBooks
-  const activeBook = bookList[activeTab.location.bookIndex]
-  const activeChapterCount = activeBook?.chapters.length ?? 0
   const searchResults = useMemo(() => {
     const trimmed = searchTerm.trim()
     if (!bookList.length || trimmed.length < 2) {
@@ -213,15 +299,6 @@ function App() {
       return
     }
     updateTabLocation(activeTab.id, location)
-    setHoveredVerse(location.verseIndex ?? null)
-  }
-
-  const handleVerseInteraction = (verseIndex: number) => {
-    if (!activeTab) {
-      return
-    }
-    updateTabLocation(activeTab.id, { verseIndex })
-    setHoveredVerse(verseIndex)
   }
 
   const recentItems = recent.map((entry) => {
@@ -229,12 +306,36 @@ function App() {
     return {
       ...entry,
       label: formatLocation(entry.location, bookName),
+      selected: selectedRecentKeys.includes(entry.key),
     }
   })
 
-  const columnStyle = {
-    gridTemplateColumns: `repeat(${activeTab.translations.length}, minmax(240px, 1fr))`,
-  }
+  const selectedRecentEntries: VerseStackTarget[] = selectedRecentKeys
+    .map((key) => recentItems.find((entry) => entry.key === key))
+    .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+    .map((entry) => ({
+      key: entry.key,
+      location: entry.location,
+      label: entry.label,
+    }))
+
+  const fallbackTarget: VerseStackTarget[] =
+    !selectedRecentEntries.length && verseSelected
+      ? [
+          {
+            key: makeLocationKey(activeTab.location),
+            location: activeTab.location,
+            label: formatLocation(
+              activeTab.location,
+              bookList[activeTab.location.bookIndex]?.name,
+            ),
+          },
+        ]
+      : []
+
+  const verseStackTargets: VerseStackTarget[] = selectedRecentEntries.length
+    ? selectedRecentEntries
+    : fallbackTarget
 
   return (
     <div className="app-shell">
@@ -250,7 +351,7 @@ function App() {
         <div className="search-box">
           <input
             type="search"
-            placeholder="Search for text, e.g. “in the beginning”"
+            placeholder='Search for text, e.g. "in the beginning"'
             value={searchTerm}
             onChange={(event) => setSearchTerm(event.target.value)}
           />
@@ -259,47 +360,6 @@ function App() {
 
       <div className="layout">
         <section className="workspace">
-          <div className="tab-bar">
-            {tabs.map((tab) => {
-              const bookName = bookList[tab.location.bookIndex]?.abbrev?.toUpperCase()
-              const label = formatLocation(tab.location, bookName)
-              const translationsLabel = tab.translations
-                .map((id) => translationDefinitions.find((definition) => definition.id === id)?.shortName ?? id)
-                .join(' / ')
-              return (
-                <button
-                  key={tab.id}
-                  className={`tab ${tab.id === activeTabId ? 'active' : ''}`}
-                  onClick={() => {
-                    setActiveTabId(tab.id)
-                    setHoveredVerse(null)
-                  }}
-                  title={translationsLabel}
-                >
-                  <div className="tab-label">
-                    <span>{label}</span>
-                    <small>{translationsLabel}</small>
-                  </div>
-                  {tabs.length > 1 && (
-                    <span
-                      className="tab-close"
-                      role="button"
-                      aria-label="Close tab"
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        closeTab(tab.id)
-                      }}
-                    >
-                      ×
-                    </span>
-                  )}
-                </button>
-              )
-            })}
-            <button className="add-tab" onClick={addTab}>
-              + New tab
-            </button>
-          </div>
 
           <div className="tab-content">
             {error && (
@@ -310,119 +370,207 @@ function App() {
             )}
             {!error && loading && (
               <div className="status callout muted">
-                <p>Loading translations…</p>
+                <p>Loading translations...</p>
               </div>
             )}
 
             <div className="navigation-panel">
-              <div className="fisheye-wrapper">
-                <div className="section-header">
-                  <h3>Fisheye navigator</h3>
+              <div className="section-header">
+                <h3>Navigate</h3>
+                <div className="fisheye-controls">
                   <p>Glide from books to chapters to verses with a cascading hover.</p>
+                  <button
+                    className="ghost"
+                    type="button"
+                    aria-label={showFisheye ? 'Collapse navigator' : 'Expand navigator'}
+                    onClick={() => setShowFisheye((state) => !state)}
+                  >
+                    {showFisheye ? '-' : '+'}
+                  </button>
                 </div>
-                <FisheyeMenu
-                  books={bookList}
-                  location={activeTab.location}
-                  onNavigate={handleSearchNavigate}
-                />
               </div>
-              <div className="book-grid" role="tablist" aria-label="Bible books">
-                {bookList.map((book, index) => (
-                  <button
-                    key={book.abbrev}
-                    className={index === activeTab.location.bookIndex ? 'active' : ''}
-                    onClick={() => updateTabLocation(activeTab.id, { bookIndex: index })}
-                    title={book.name}
-                  >
-                    <span className="book-name">{book.name}</span>
-                    <span className="book-abbrev">{book.abbrev.toUpperCase()}</span>
-                  </button>
-                ))}
-              </div>
-              <div className="chapter-scroll" aria-label="Chapters">
-                {Array.from({ length: activeChapterCount }).map((_, index) => (
-                  <button
-                    key={`chapter-${index}`}
-                    className={index === activeTab.location.chapterIndex ? 'active' : ''}
-                    onClick={() => updateTabLocation(activeTab.id, { chapterIndex: index })}
-                  >
-                    {index + 1}
-                  </button>
-                ))}
-              </div>
+              {showFisheye && (
+                <div className="fisheye-wrapper">
+                  <FisheyeMenu
+                    books={bookList}
+                    location={activeTab.location}
+                    onNavigate={handleSearchNavigate}
+                  />
+                </div>
+              )}
             </div>
 
-            <div className="translation-controls">
-              <span>Translations</span>
-              <div className="translation-list">
-                {translationDefinitions.map((definition) => {
-                  const checked = activeTab.translations.includes(definition.id)
-                  const disabled =
-                    !checked && activeTab.translations.length >= MAX_TRANSLATIONS
-                  return (
-                    <label
-                      key={definition.id}
-                      className={`translation-pill ${checked ? 'selected' : ''}`}
-                      style={{ borderColor: definition.color }}
+            <div className="recent-inline">
+              <div className="recent-inline-header">
+                <h4>Recently viewed</h4>
+                {!recentItems.length && (
+                  <p className="muted">Navigate or search to populate this list.</p>
+                )}
+              </div>
+              {recentItems.length > 0 && (
+                <div className="recent-inline-list">
+                  {recentItems.map((entry) => (
+                    <button
+                      type="button"
+                      key={entry.key}
+                      draggable
+                      onDragStart={(event) => handleRecentDragStart(event, entry.key)}
+                      onDragOver={(event) => handleRecentDragOver(event, entry.key)}
+                      onDrop={handleRecentDrop}
+                      onDragEnd={handleRecentDragEnd}
+                      className={`${draggingRecent === entry.key ? 'dragging' : ''} ${entry.selected ? 'selected' : ''}`}
+                      aria-grabbed={draggingRecent === entry.key}
+                      aria-pressed={entry.selected}
+                      title={entry.label}
+                      onClick={() => toggleRecentSelection(entry.key)}
                     >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        disabled={disabled}
-                        onChange={() => toggleTranslation(activeTab.id, definition.id)}
-                      />
-                      <span>{definition.shortName}</span>
-                    </label>
+                      <span
+                        className="recent-remove"
+                        role="button"
+                        aria-label={`Remove ${entry.label}`}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          removeRecent(entry.key)
+                        }}
+                      >
+                        ×
+                      </span>
+                      <span className="recent-label">{entry.label}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {!verseSelected && (
+              <div className="status callout muted">
+                <p>Select a verse from the navigator to start reading.</p>
+              </div>
+            )}
+
+            {verseStackTargets.length > 0 && (
+              <div className="verse-stack-group">
+                {verseStackTargets.map((target) => {
+                  const rows = buildVerseRowsForLocation(target.location)
+                  return (
+                    <div key={target.key} className="verse-stack-block">
+                      <div className="verse-stack-block-header">
+                        <h4>{target.label}</h4>
+                      </div>
+                      <div className="verse-stack">
+                        {rows.map((row) => {
+                          const rowTranslations = row.entries.filter((entry) => entry.text)
+                          if (!rowTranslations.length) {
+                            return null
+                          }
+                          const isActive = target.location.verseIndex === row.verseIndex
+                          return (
+                            <div
+                              key={`${target.key}-${row.verseIndex}`}
+                              className={`verse-stack-row ${isActive ? 'selected' : ''}`}
+                            >
+                              <span className="verse-stack-number">{row.verseIndex + 1}</span>
+                              <div className="verse-stack-translations">
+                        {rowTranslations.map((entry) => {
+                          const accent = entry.translation?.color ?? '#4c63ed'
+                          return (
+                            <article
+                              key={`${target.key}-${entry.translationId}-${row.verseIndex}`}
+                              className="verse-stack-entry"
+                              style={{ borderColor: accent, color: accent }}
+                            >
+                              <p style={{ color: '#23263b' }}>{entry.text}</p>
+                            </article>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )
+                })}
+                      </div>
+                    </div>
                   )
                 })}
               </div>
-            </div>
-
-            <div className="verse-columns" style={columnStyle}>
-              {activeTab.translations.map((translationId) => {
-                const translation = translationDefinitions.find(
-                  (definition) => definition.id === translationId,
-                )
-                const books = booksByTranslation[translationId]
-                const book = books?.[activeTab.location.bookIndex]
-                const chapter = book?.chapters[activeTab.location.chapterIndex] ?? []
-                return (
-                  <div key={translationId} className="verse-column">
-                    <div className="column-header" style={{ borderColor: translation?.color }}>
-                      <h3>{translation?.name ?? translationId}</h3>
-                      <p className="column-subtitle">{translation?.description}</p>
-                    </div>
-                    <div className="verses">
-                      {chapter.map((verse, index) => {
-                        const isActive = activeTab.location.verseIndex === index
-                        const isHovered = hoveredVerse === index
-                        return (
-                          <button
-                            key={`${translationId}-${index}`}
-                            className={`verse ${isActive ? 'selected' : ''} ${isHovered ? 'hovered' : ''}`}
-                            onMouseEnter={() => setHoveredVerse(index)}
-                            onFocus={() => setHoveredVerse(index)}
-                            onMouseLeave={() => setHoveredVerse(null)}
-                            onBlur={() => setHoveredVerse(null)}
-                            onClick={() => handleVerseInteraction(index)}
-                          >
-                            <span className="verse-number">{index + 1}</span>
-                            <span className="verse-text">{verse}</span>
-                          </button>
-                        )
-                      })}
-                      {!chapter.length && (
-                        <p className="muted">Select a book and chapter to start reading.</p>
-                      )}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
+            )}
           </div>
         </section>
 
         <aside className="side-panel">
+          <section>
+            <h2>Settings</h2>
+            <div className="setting-group">
+              <div className="setting-row">
+                <div>
+                  <strong>Theme</strong>
+                  <p className="muted">Switch between light and dark.</p>
+                </div>
+                <div className="theme-toggle">
+                  <button
+                    type="button"
+                    className={theme === 'light' ? 'active' : ''}
+                    onClick={() => setTheme('light')}
+                  >
+                    Light
+                  </button>
+                  <button
+                    type="button"
+                    className={theme === 'dark' ? 'active' : ''}
+                    onClick={() => setTheme('dark')}
+                  >
+                    Dark
+                  </button>
+                </div>
+              </div>
+              <div className="setting-row">
+                <div>
+                  <strong>Font size</strong>
+                  <p className="muted">Adjust verse text size.</p>
+                </div>
+                <div className="font-slider">
+                  <input
+                    id="font-size"
+                    type="range"
+                    min="14"
+                    max="22"
+                    value={fontSize}
+                    onChange={(event) => setFontSize(Number(event.target.value))}
+                  />
+                  <span>{fontSize}px</span>
+                </div>
+              </div>
+            </div>
+            {!verseSelected && (
+              <p className="muted">Pick a verse to customize visible translations.</p>
+            )}
+            {verseSelected && (
+              <div className="translation-controls">
+                <span>Translations</span>
+                <div className="translation-list">
+                  {translationDefinitions.map((definition) => {
+                    const checked = activeTab.translations.includes(definition.id)
+                    const disabled =
+                      !checked && activeTab.translations.length >= MAX_TRANSLATIONS
+                    return (
+                      <label
+                        key={definition.id}
+                        className={`translation-pill ${checked ? 'selected' : ''}`}
+                        style={{ borderColor: definition.color }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={disabled}
+                          onChange={() => toggleTranslation(activeTab.id, definition.id)}
+                        />
+                        <span>{definition.shortName}</span>
+                      </label>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </section>
           <section>
             <h2>Search results</h2>
             {searchTerm.trim().length > 0 && searchTerm.trim().length < 2 && (
@@ -449,19 +597,6 @@ function App() {
             </div>
           </section>
 
-          <section>
-            <h2>Recently viewed</h2>
-            {!recentItems.length && <p className="muted">Jump to a verse to build your list.</p>}
-            <ul className="recent-list">
-              {recentItems.map((entry) => (
-                <li key={entry.key}>
-                  <button onClick={() => handleSearchNavigate(entry.location)}>
-                    {entry.label}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </section>
         </aside>
       </div>
     </div>
@@ -469,3 +604,11 @@ function App() {
 }
 
 export default App
+
+
+
+
+
+
+
+
